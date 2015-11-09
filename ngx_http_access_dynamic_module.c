@@ -43,8 +43,9 @@ static ngx_int_t ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r);
 static char *ngx_http_access_dynamic_enable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_access_dynamic_init_zone (ngx_shm_zone_t *shm_zone, void *data);
 void ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r);
-static ngx_int_t insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t ipaddr,ngx_cidr_t *cidr);
+static ngx_int_t insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr_t *cidr);
 static ngx_int_t search_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr);
+static ngx_int_t del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr);
 static char *ngx_http_access_dynamic_del_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_access_dynamic_del_handler(ngx_http_request_t *r);
 
@@ -318,17 +319,15 @@ ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r){
 	    			ipstr_invalid->data = ipstr.data;
 	    			ipstr_invalid->len = ipstr.len;
 	    			continue;
-	    		}
-	    		if (rc == NGX_DONE) {
+	    		}else if (rc == NGX_DONE) {
 	    			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "low address bits of %V are meaningless", &ipstr);
 	    			ngx_str_t *ipstr_invalid = ngx_array_push(ipstr_invalid_arr);
 	    			ipstr_invalid->data = ipstr.data;
 	    			ipstr_invalid->len = ipstr.len;
 	    			continue;
-	    		}
-
-	    		if (cidr.family == AF_INET) {
-	    			insert_into_dict(ctx,ipstr,&cidr);
+	    		}else if (cidr.family == AF_INET) {
+	    			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "##insert ipstr_arr item: \"%V\"", &ipstr);
+	    			insert_into_dict(ctx,&ipstr,&cidr);
 	    		}
 
 	 }
@@ -352,7 +351,7 @@ ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r){
 	    			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "error happend when alloc memory(ngx_create_temp_buf)");
 	    			goto GO_DONE;
 	    		}
-	    		u_char *invalid_buf = b->pos;//ngx_pcalloc(r->pool,invalid_size);
+	    		u_char *invalid_buf = b->pos;
 	    		u_char *invalid_buf_pos;
 	    		invalid_buf_pos = ngx_sprintf(invalid_buf,"invalid ips:");
 	    		for(loop=0;loop<ipstr_invalid_arr->nelts;loop++){
@@ -405,61 +404,6 @@ GO_DONE:
 	return;
 }
 
-static ngx_int_t
-insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t ipaddr,ngx_cidr_t *cidr){
-	ngx_http_access_dynamic_shctx_t *shm;
-    shm = ctx->shm;
-    ngx_uint_t key;
-    key = ngx_hash_key_lc((u_char *)ipaddr.data, ipaddr.len) % DICT_CAPACITY;
-    ngx_int_t idx = shm->bucket_idx[key];
-    ngx_int_t last_used_bucket = shm->last_used_bucket;
-    ngx_int_t pre_idx = idx;
-    if (last_used_bucket >= DICT_BUCKET_CAPACITY - 1) {
-        return -1;
-    }
-    if (idx >= 0) {
-        while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr.data,ipaddr.len)) {
-            pre_idx = idx;
-            idx = shm->bucket_arr[idx].next;
-        }
-        if (idx >= 0) {
-            return -idx;
-        } else {
-        	ngx_cpystrn((u_char *)shm->bucket_arr[++last_used_bucket].addr_text, ipaddr.data,ipaddr.len);
-        	shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
-        	shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
-            shm->bucket_arr[pre_idx].next = last_used_bucket;
-        }
-    } else {
-        shm->bucket_idx[key] = ++last_used_bucket;
-        ngx_cpystrn((u_char *)&shm->bucket_arr[last_used_bucket].addr_text, ipaddr.data,ipaddr.len);
-        shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
-        shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
-    }
-    shm->last_used_bucket = last_used_bucket;
-    return last_used_bucket;
-}
-
-static ngx_int_t
-search_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
-	ngx_http_access_dynamic_shctx_t *shm;
-    shm= ctx->shm;
-    ngx_uint_t key;
-    key = ngx_hash_key_lc((u_char *)ipaddr->data, ipaddr->len) % DICT_CAPACITY;
-    ngx_int_t idx = shm->bucket_idx[key];
-    if (idx >= 0) {
-        while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr->data,ipaddr->len)) {
-            idx = shm->bucket_arr[idx].next;
-        }
-        if (idx >= 0) {
-            return idx;
-        } else {
-            return -1;
-        }
-    } else {
-        return -1;
-    }
-}
 
 static char *
 ngx_http_access_dynamic_exist_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
@@ -471,12 +415,14 @@ ngx_http_access_dynamic_exist_command(ngx_conf_t *cf, ngx_command_t *cmd, void *
 static ngx_int_t
 ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r){
 	ngx_int_t rc;
-	ngx_str_t arg_ip_value;
-	char *arg_ip_name = "ip=";
+	ngx_str_t args_ip_value;
+	char *args_ip_name = "ip=";
 	char separator = '&';
-	u_char *arg_ip_value_start,*arg_ip_value_end;
+	u_char *args_ip_value_start,*args_ip_value_end;
 	ngx_http_access_dynamic_main_conf_t *main_conf;
 	ngx_http_access_dynamic_ctx_t *ctx;
+	ngx_chain_t *out;
+	ngx_buf_t *b ;
 
 	if (!(r->method & (NGX_HTTP_GET)))	{
 	    return NGX_HTTP_NOT_ALLOWED;
@@ -488,18 +434,38 @@ ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r){
 	ngx_str_set(&r->headers_out.content_type,"text/plain");
 	main_conf = ngx_http_get_module_main_conf(r,ngx_http_access_dynamic_module);
 	ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
-	arg_ip_value_start = ngx_strnstr((u_char *)r->args.data,arg_ip_name,r->args.len);
-	arg_ip_value_start += sizeof("ip=");
-	arg_ip_value_end = ngx_strlchr(arg_ip_value_start,r->args.data+r->args.len,separator);
-	arg_ip_value.data = arg_ip_value_start;
-	arg_ip_value.len = arg_ip_value_end - arg_ip_value_start;
 
-	rc = search_from_dict(ctx,&arg_ip_value);
+	size_t args_buf_tmp_len = r->args.len;
+	if(!args_buf_tmp_len || args_buf_tmp_len <=0){
+		rc=-1;
+		goto GO_RESULT;
+	}
+	u_char *args_buf_tmp = ngx_pcalloc(r->pool,args_buf_tmp_len);
+	if(args_buf_tmp == NULL){
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_pcalloc fail, args_buf_tmp is null");
+		return NGX_HTTP_SERVICE_UNAVAILABLE;
+	}
 
-//	ngx_log_error(NGX_LOG_ERR,r->connection->log,0,"lastid:%d",lastid);
+	u_char *args_buf_tmp_last =  args_buf_tmp;
+	ngx_cpystrn(args_buf_tmp_last,(u_char *)r->args.data,args_buf_tmp_len+1);
 
-	ngx_buf_t *b = ngx_create_temp_buf(r->pool,1);
-	ngx_chain_t *out = ngx_alloc_chain_link(r->pool);
+	args_ip_value_start = ngx_strnstr(args_buf_tmp,args_ip_name,args_buf_tmp_len);
+	args_ip_value_start += 3;
+	args_ip_value_end = ngx_strlchr(args_ip_value_start,args_buf_tmp + args_buf_tmp_len, separator);
+	if(NULL == args_ip_value_end){
+		args_ip_value_end = args_buf_tmp + args_buf_tmp_len;
+	}
+
+	args_ip_value.data = args_ip_value_start;
+	args_ip_value.len = args_ip_value_end - args_ip_value_start;
+
+//	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "##search_from_dict item: \"%V\"", &args_ip_value);
+	rc = search_from_dict(ctx,&args_ip_value);
+
+
+GO_RESULT:
+	b = ngx_create_temp_buf(r->pool,1);
+	out = ngx_alloc_chain_link(r->pool);
 	if(b == NULL || out == NULL){
 		return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	}
@@ -529,55 +495,165 @@ ngx_http_access_dynamic_del_command(ngx_conf_t *cf, ngx_command_t *cmd, void *co
 
 static ngx_int_t
 ngx_http_access_dynamic_del_handler(ngx_http_request_t *r){
-	ngx_int_t rc;
-	ngx_str_t arg_ip_value;
-	char *arg_ip_name = "ip=";
-	char separator = '&';
-	u_char *arg_ip_value_start,*arg_ip_value_end;
-	ngx_http_access_dynamic_main_conf_t *main_conf;
-	ngx_http_access_dynamic_ctx_t *ctx;
+		ngx_int_t rc;
+		ngx_str_t args_ip_value;
+		char *args_ip_name = "ip=";
+		char separator = '&';
+		u_char *args_ip_value_start,*args_ip_value_end;
+		ngx_http_access_dynamic_main_conf_t *main_conf;
+		ngx_http_access_dynamic_ctx_t *ctx;
+		ngx_chain_t *out;
+		ngx_buf_t *b ;
 
-	if (!(r->method & (NGX_HTTP_GET)))	{
-	    return NGX_HTTP_NOT_ALLOWED;
-	}
-	rc = ngx_http_discard_request_body(r);
-	if (rc != NGX_OK)	{
-	    return rc;
-	}
-	ngx_str_set(&r->headers_out.content_type,"text/plain");
-	main_conf = ngx_http_get_module_main_conf(r,ngx_http_access_dynamic_module);
-	ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
-	arg_ip_value_start = ngx_strnstr((u_char *)r->args.data,arg_ip_name,r->args.len);
-	arg_ip_value_start += sizeof("ip=");
-	arg_ip_value_end = ngx_strlchr(arg_ip_value_start,r->args.data+r->args.len,separator);
-	arg_ip_value.data = arg_ip_value_start;
-	arg_ip_value.len = arg_ip_value_end - arg_ip_value_start;
+		if (!(r->method & (NGX_HTTP_GET)))	{
+		    return NGX_HTTP_NOT_ALLOWED;
+		}
+		rc = ngx_http_discard_request_body(r);
+		if (rc != NGX_OK)	{
+		    return rc;
+		}
+		ngx_str_set(&r->headers_out.content_type,"text/plain");
+		main_conf = ngx_http_get_module_main_conf(r,ngx_http_access_dynamic_module);
+		ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
 
-	rc = search_from_dict(ctx,&arg_ip_value);
+		size_t args_buf_tmp_len = r->args.len;
+		if(!args_buf_tmp_len || args_buf_tmp_len <=0){
+			rc=-1;
+			goto GO_RESULT;
+		}
+		u_char *args_buf_tmp = ngx_pcalloc(r->pool,args_buf_tmp_len);
+		if(args_buf_tmp == NULL){
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_pcalloc fail, args_buf_tmp is null");
+			return NGX_HTTP_SERVICE_UNAVAILABLE;
+		}
 
-//	ngx_log_error(NGX_LOG_ERR,r->connection->log,0,"lastid:%d",lastid);
+		u_char *args_buf_tmp_last =  args_buf_tmp;
+		ngx_cpystrn(args_buf_tmp_last,(u_char *)r->args.data,args_buf_tmp_len+1);
 
-	ngx_buf_t *b = ngx_create_temp_buf(r->pool,1);
-	ngx_chain_t *out = ngx_alloc_chain_link(r->pool);
-	if(b == NULL || out == NULL){
-		return NGX_HTTP_INTERNAL_SERVER_ERROR;
-	}
-	out->buf = b;
-	out->next = NULL;
-	if(rc>=0){
-		b->last = ngx_sprintf(b->last,"1");
-	}else{
-		b->last = ngx_sprintf(b->last,"0");
-	}
-	b->last_buf = 1;
-	r->headers_out.status = NGX_HTTP_OK;
-	rc = ngx_http_send_header(r);
-	if (rc == NGX_ERROR || rc > NGX_OK || r->header_only){
-	    return rc;
-	}
+		args_ip_value_start = ngx_strnstr(args_buf_tmp,args_ip_name,args_buf_tmp_len);
+		args_ip_value_start += 3;
+		args_ip_value_end = ngx_strlchr(args_ip_value_start,args_buf_tmp + args_buf_tmp_len, separator);
+		if(NULL == args_ip_value_end){
+			args_ip_value_end = args_buf_tmp + args_buf_tmp_len;
+		}
 
-	return ngx_http_output_filter(r, out);
+		args_ip_value.data = args_ip_value_start;
+		args_ip_value.len = args_ip_value_end - args_ip_value_start;
+
+
+		rc = del_from_dict(ctx,&arg_ip_value);
+
+		ngx_buf_t *b = ngx_create_temp_buf(r->pool,1);
+		ngx_chain_t *out = ngx_alloc_chain_link(r->pool);
+		if(b == NULL || out == NULL){
+			return NGX_HTTP_INTERNAL_SERVER_ERROR;
+		}
+		out->buf = b;
+		out->next = NULL;
+		if(rc>=0){
+			b->last = ngx_sprintf(b->last,"1");
+		}else{
+			b->last = ngx_sprintf(b->last,"0");
+		}
+		b->last_buf = 1;
+		r->headers_out.status = NGX_HTTP_OK;
+		rc = ngx_http_send_header(r);
+		if (rc == NGX_ERROR || rc > NGX_OK || r->header_only){
+			return rc;
+		}
+
+		return ngx_http_output_filter(r, out);
 }
+
+static ngx_int_t
+del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
+	ngx_http_access_dynamic_shctx_t *shm;
+    shm= ctx->shm;
+    ngx_uint_t key;
+    key = ngx_hash_key_lc((u_char *)ipaddr->data, ipaddr->len) % DICT_CAPACITY;
+    ngx_int_t idx = shm->bucket_idx[key];
+    if (idx >= 0) {
+        while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr->data,ipaddr->len)) {
+            idx = shm->bucket_arr[idx].next;
+        }
+        if (idx >= 0) {
+            return idx;
+        } else {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+
+
+
+
+
+
+
+
+
+
+
+}
+
+
+static ngx_int_t
+insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr_t *cidr){
+	ngx_http_access_dynamic_shctx_t *shm;
+    shm = ctx->shm;
+    ngx_uint_t key;
+    key = ngx_hash_key_lc(ipaddr->data, ipaddr->len) % DICT_CAPACITY;
+    ngx_int_t idx = shm->bucket_idx[key];
+    ngx_int_t last_used_bucket = shm->last_used_bucket;
+    ngx_int_t pre_idx = idx;
+    if (last_used_bucket >= DICT_BUCKET_CAPACITY - 1) {
+        return -1;
+    }
+    if (idx >= 0) {
+        while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr->data,ipaddr->len)) {
+            pre_idx = idx;
+            idx = shm->bucket_arr[idx].next;
+        }
+        if (idx >= 0) {
+            return -idx;
+        } else {
+        	ngx_cpystrn((u_char *)shm->bucket_arr[++last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
+        	shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
+        	shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
+            shm->bucket_arr[pre_idx].next = last_used_bucket;
+        }
+    } else {
+        shm->bucket_idx[key] = ++last_used_bucket;
+        ngx_cpystrn((u_char *)&shm->bucket_arr[last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
+        shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
+        shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
+    }
+    shm->last_used_bucket = last_used_bucket;
+    return last_used_bucket;
+}
+
+static ngx_int_t
+search_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
+	ngx_http_access_dynamic_shctx_t *shm;
+    shm= ctx->shm;
+    ngx_uint_t key;
+    key = ngx_hash_key_lc((u_char *)ipaddr->data, ipaddr->len) % DICT_CAPACITY;
+    ngx_int_t idx = shm->bucket_idx[key];
+    if (idx >= 0) {
+        while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr->data,ipaddr->len)) {
+            idx = shm->bucket_arr[idx].next;
+        }
+        if (idx >= 0) {
+            return idx;
+        } else {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+}
+
 
 static ngx_int_t
 ngx_http_access_dynamic_init(ngx_conf_t *cf){
