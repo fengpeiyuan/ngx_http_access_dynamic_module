@@ -541,28 +541,29 @@ ngx_http_access_dynamic_del_handler(ngx_http_request_t *r){
 		args_ip_value.len = args_ip_value_end - args_ip_value_start;
 
 
-		rc = del_from_dict(ctx,&arg_ip_value);
+		rc = del_from_dict(ctx,&args_ip_value);
 
-		ngx_buf_t *b = ngx_create_temp_buf(r->pool,1);
-		ngx_chain_t *out = ngx_alloc_chain_link(r->pool);
-		if(b == NULL || out == NULL){
-			return NGX_HTTP_INTERNAL_SERVER_ERROR;
-		}
-		out->buf = b;
-		out->next = NULL;
-		if(rc>=0){
-			b->last = ngx_sprintf(b->last,"1");
-		}else{
-			b->last = ngx_sprintf(b->last,"0");
-		}
-		b->last_buf = 1;
-		r->headers_out.status = NGX_HTTP_OK;
-		rc = ngx_http_send_header(r);
-		if (rc == NGX_ERROR || rc > NGX_OK || r->header_only){
-			return rc;
-		}
+GO_RESULT:
+			b = ngx_create_temp_buf(r->pool,1);
+			out = ngx_alloc_chain_link(r->pool);
+			if(b == NULL || out == NULL){
+				return NGX_HTTP_INTERNAL_SERVER_ERROR;
+			}
+			out->buf = b;
+			out->next = NULL;
+			if(rc>=0){
+				b->last = ngx_sprintf(b->last,"1");
+			}else{
+				b->last = ngx_sprintf(b->last,"0");
+			}
+			b->last_buf = 1;
+			r->headers_out.status = NGX_HTTP_OK;
+			rc = ngx_http_send_header(r);
+			if (rc == NGX_ERROR || rc > NGX_OK || r->header_only){
+			    return rc;
+			}
 
-		return ngx_http_output_filter(r, out);
+			return ngx_http_output_filter(r, out);
 }
 
 static ngx_int_t
@@ -583,9 +584,9 @@ del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
         		shm->bucket_arr[pre_idx].next = shm->bucket_arr[idx].next;
         	}
         	shm->bucket_arr[idx].next = -1;
-        	ngx_memzero(shm->bucket_arr[idx].addr_text,256);
-        	ngx_memzero(shm->bucket_arr[idx].addr,256);
-        	ngx_memzero(shm->bucket_arr[idx].mask,256);
+        	ngx_memzero(shm->bucket_arr[idx].addr_text,256*sizeof(char));
+        	ngx_memzero(&shm->bucket_arr[idx].addr,sizeof(in_addr_t));
+        	ngx_memzero(&shm->bucket_arr[idx].mask,sizeof(in_addr_t));
         	shm->bucket_arr[idx].is_used = 0;
         	shm->last_used_bucket = idx;
             return idx;
