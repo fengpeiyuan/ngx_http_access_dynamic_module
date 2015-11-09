@@ -16,8 +16,7 @@ typedef struct {
     in_addr_t mask;
     in_addr_t addr;
     ngx_int_t next;
-    ngx_int_t pre;
-    ngx_int_t sequence;
+    ngx_int_t is_used;
 } ngx_http_access_dynamic_dict_bucket_item;
 
 typedef struct {
@@ -205,6 +204,7 @@ ngx_http_access_dynamic_init_zone (ngx_shm_zone_t *shm_zone, void *data){
 	ctx->shm->last_used_bucket = -1;
 	for (loop = 0; loop < DICT_BUCKET_CAPACITY; loop++) {
 	        ctx->shm->bucket_arr[loop].next = -1;
+	        ctx->shm->bucket_arr[loop].is_used = 0;
 	}
     ctx->shpool->data = ctx->shm;
     len = sizeof("in share zone:") + shm_zone->shm.name.len;
@@ -572,11 +572,22 @@ del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
     ngx_uint_t key;
     key = ngx_hash_key_lc((u_char *)ipaddr->data, ipaddr->len) % DICT_CAPACITY;
     ngx_int_t idx = shm->bucket_idx[key];
+    ngx_int_t pre_idx = idx;
     if (idx >= 0) {
         while (idx >= 0 && ngx_strncasecmp((u_char *)&shm->bucket_arr[idx].addr_text, ipaddr->data,ipaddr->len)) {
+        	pre_idx = idx;
             idx = shm->bucket_arr[idx].next;
         }
         if (idx >= 0) {
+        	if(shm->bucket_arr[idx].next >= 0){
+        		shm->bucket_arr[pre_idx].next = shm->bucket_arr[idx].next;
+        	}
+        	shm->bucket_arr[idx].next = -1;
+        	ngx_memzero(shm->bucket_arr[idx].addr_text,256);
+        	ngx_memzero(shm->bucket_arr[idx].addr,256);
+        	ngx_memzero(shm->bucket_arr[idx].mask,256);
+        	shm->bucket_arr[idx].is_used = 0;
+        	shm->last_used_bucket = idx;
             return idx;
         } else {
             return -1;
@@ -584,17 +595,6 @@ del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
     } else {
         return -1;
     }
-
-
-
-
-
-
-
-
-
-
-
 }
 
 
@@ -618,16 +618,24 @@ insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr
         if (idx >= 0) {
             return -idx;
         } else {
-        	ngx_cpystrn((u_char *)shm->bucket_arr[++last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
+        	while(last_used_bucket < DICT_BUCKET_CAPACITY && shm->bucket_arr[last_used_bucket].is_used == 1){
+        		last_used_bucket++;
+        	}
+        	ngx_cpystrn((u_char *)shm->bucket_arr[last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
         	shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
         	shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
             shm->bucket_arr[pre_idx].next = last_used_bucket;
+            shm->bucket_arr[last_used_bucket].is_used = 1;
         }
     } else {
-        shm->bucket_idx[key] = ++last_used_bucket;
+    	while(last_used_bucket < DICT_BUCKET_CAPACITY && shm->bucket_arr[last_used_bucket].is_used == 1){
+    		last_used_bucket++;
+    	}
+        shm->bucket_idx[key] = last_used_bucket;
         ngx_cpystrn((u_char *)&shm->bucket_arr[last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
         shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
         shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
+        shm->bucket_arr[last_used_bucket].is_used = 1;
     }
     shm->last_used_bucket = last_used_bucket;
     return last_used_bucket;
