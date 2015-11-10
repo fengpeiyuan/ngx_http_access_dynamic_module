@@ -619,6 +619,8 @@ insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr
         if (idx >= 0) {
             return -idx;
         } else {
+        	if(last_used_bucket < 0)
+        	    last_used_bucket = 0;
         	while(last_used_bucket < DICT_BUCKET_CAPACITY && shm->bucket_arr[last_used_bucket].is_used == 1){
         		last_used_bucket++;
         	}
@@ -629,6 +631,8 @@ insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr
             shm->bucket_arr[last_used_bucket].is_used = 1;
         }
     } else {
+    	if(last_used_bucket < 0)
+    		last_used_bucket = 0;
     	while(last_used_bucket < DICT_BUCKET_CAPACITY && shm->bucket_arr[last_used_bucket].is_used == 1){
     		last_used_bucket++;
     	}
