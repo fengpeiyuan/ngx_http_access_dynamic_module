@@ -326,7 +326,7 @@ ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r){
 	    			ipstr_invalid->len = ipstr.len;
 	    			continue;
 	    		}else if (cidr.family == AF_INET) {
-	    			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "##insert ipstr_arr item: \"%V\"", &ipstr);
+//	    			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "##insert ipstr_arr item: \"%V\"", &ipstr);
 	    			insert_into_dict(ctx,&ipstr,&cidr);
 	    		}
 
@@ -683,7 +683,52 @@ ngx_http_access_dynamic_init(ngx_conf_t *cf){
 
 static ngx_int_t
 ngx_http_access_dynamic_handler(ngx_http_request_t *r){
-	return 0;
+	 struct sockaddr_in          *sin;
+	 ngx_http_access_dynamic_main_conf_t  *main_conf;
+	 ngx_http_access_dynamic_ctx_t *ctx;
+	 ngx_http_access_dynamic_shctx_t *shm;
+	 ngx_str_t *addr_text;
+	 in_addr_t addr;
+	 ngx_int_t idx;
+	 in_addr_t mask_in_dic;
+	 in_addr_t addr_in_dic;
+
+	 main_conf = ngx_http_get_module_main_conf(r, ngx_http_access_dynamic_module);
+	 if(!main_conf){
+		 return NGX_HTTP_SERVICE_UNAVAILABLE;
+	 }
+	 ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
+	 if(!ctx){
+	 		 return NGX_HTTP_SERVICE_UNAVAILABLE;
+	 }
+	 shm = ctx->shm;
+	 if(!shm){
+		 return NGX_HTTP_SERVICE_UNAVAILABLE;
+	 }
+
+	 if(r->connection->sockaddr->sa_family == AF_INET) {
+		 addr_text = &r->connection->addr_text;
+		 if(!addr_text){
+			 return NGX_HTTP_SERVICE_UNAVAILABLE;
+		 }
+         sin = (struct sockaddr_in *) r->connection->sockaddr;
+         addr = sin->sin_addr.s_addr;
+         idx = search_from_dict(ctx,addr_text);
+         if(idx >= 0){
+        	 mask_in_dic = shm->bucket_arr[idx].mask;
+        	 addr_in_dic = shm->bucket_arr[idx].addr;
+        	 if(!mask_in_dic || !addr_in_dic){
+        		 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "mask_in_dic is null or addr_in_dic is null, in dic bucket_arr[%d]",idx);
+        	 }else{
+				 if ((addr & mask_in_dic) == addr_in_dic) {
+					 return NGX_HTTP_FORBIDDEN;
+				 }
+        	 }
+         }
+		 return NGX_OK;
+	 }
+
+	 return NGX_DECLINED;
 }
 
 
