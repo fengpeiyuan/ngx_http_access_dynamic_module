@@ -7,6 +7,10 @@
 #define PUSH_BATCH_SIZE 10
 
 typedef struct {
+    ngx_shm_zone_t *shm_zone;
+} ngx_http_access_dynamic_main_conf_t;
+
+typedef struct {
     ngx_flag_t enable;
     ngx_flag_t can_push;
     ngx_shm_zone_t *shm_zone;
@@ -31,7 +35,7 @@ typedef struct {
     ngx_slab_pool_t             *shpool;
 } ngx_http_access_dynamic_ctx_t;
 
-
+static void *ngx_http_access_dynamic_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_access_dynamic_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_access_dynamic_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static char *ngx_http_access_dynamic_push_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -88,7 +92,7 @@ static ngx_command_t ngx_http_access_dynamic_commands[] = {
 static ngx_http_module_t  ngx_http_access_dynamic_ctx = {
     NULL,                                  /* preconfiguration */
     ngx_http_access_dynamic_init,
-    NULL,/* create main configuration */
+    ngx_http_access_dynamic_create_main_conf,/* create main configuration */
     NULL,                                  /* init main configuration */
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
@@ -112,6 +116,16 @@ ngx_module_t  ngx_http_access_dynamic_module = {
 };
 
 static void *
+ngx_http_access_dynamic_create_main_conf(ngx_conf_t *cf){
+	ngx_http_access_dynamic_main_conf_t  *conf;
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_access_dynamic_main_conf_t));
+    if (conf == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    return conf;
+}
+
+static void *
 ngx_http_access_dynamic_create_loc_conf(ngx_conf_t *cf){
 	ngx_http_access_dynamic_loc_conf_t  *conf;
     conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_access_dynamic_loc_conf_t));
@@ -127,9 +141,9 @@ static char *
 ngx_http_access_dynamic_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child){
     ngx_http_access_dynamic_loc_conf_t *prev = parent;
     ngx_http_access_dynamic_loc_conf_t *conf = child;
-    if (conf->shm_zone == NULL) {
-           conf->shm_zone = prev->shm_zone;
-    }
+//    if (conf->shm_zone == NULL) {
+//           conf->shm_zone = prev->shm_zone;
+//    }
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
     ngx_conf_merge_value(conf->can_push, prev->can_push, 0);
     return NGX_CONF_OK;
@@ -154,6 +168,11 @@ ngx_http_access_dynamic_enable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
         return NGX_CONF_ERROR;
     }
 
+    ngx_http_access_dynamic_main_conf_t  *main_conf = ngx_http_conf_get_module_main_conf(cf, ngx_http_access_dynamic_module);
+    if (main_conf == NULL) {
+    	return NGX_CONF_ERROR;
+    }
+
 	ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_access_dynamic_ctx_t));
 	if (ctx == NULL) {
 		return NGX_CONF_ERROR;
@@ -168,13 +187,13 @@ ngx_http_access_dynamic_enable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
 	if (shm_zone->data) {
 	    ctx = shm_zone->data;
 	    shm_zone->init = ngx_http_access_dynamic_init_zone;
-	    loc_conf->shm_zone = shm_zone;
+	    main_conf->shm_zone = shm_zone;
 	    ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0,"%V is already bound to she_zone \"%V\"",&cmd->name, &shm_name);
 	    return NGX_CONF_OK;
 	}
 	shm_zone->init = ngx_http_access_dynamic_init_zone;
 	shm_zone->data = ctx;
-	loc_conf->shm_zone = shm_zone;
+	main_conf->shm_zone = shm_zone;
     return NGX_CONF_OK;
 }
 
@@ -257,6 +276,7 @@ ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r){
 	u_char *last_cpy = NULL;
 	ngx_uint_t loop;
 	ngx_http_access_dynamic_loc_conf_t *loc_conf;
+	ngx_http_access_dynamic_main_conf_t *main_conf;
 	ngx_http_access_dynamic_ctx_t *ctx;
 	ngx_chain_t *out;
 	ngx_buf_t *b;
@@ -264,12 +284,22 @@ ngx_http_access_dynamic_push_post_handler(ngx_http_request_t *r){
 	ngx_shm_zone_t *shm;
 
 	loc_conf = ngx_http_get_module_loc_conf(r, ngx_http_access_dynamic_module);
+	if (loc_conf == NULL) {
+		ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+		return;
+	}
+	main_conf = ngx_http_get_module_main_conf(r, ngx_http_access_dynamic_module);
+	if (main_conf == NULL) {
+		ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+		return;
+	}
+
 	can_push = loc_conf->can_push;
 	if(can_push != 1){
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "access_dynamic_push config error");
 		goto GO_DONE;
 	}
-	shm = loc_conf->shm_zone;
+	shm = main_conf->shm_zone;
 	if(!shm){
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "access_dynamic not set on error");
 		goto GO_DONE;
@@ -443,6 +473,7 @@ ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r){
 	char separator = '&';
 	u_char *args_ip_value_start,*args_ip_value_end;
 	ngx_http_access_dynamic_loc_conf_t *loc_conf;
+	ngx_http_access_dynamic_main_conf_t *main_conf;
 	ngx_http_access_dynamic_ctx_t *ctx;
 	ngx_chain_t *out;
 	ngx_buf_t *b ;
@@ -457,6 +488,17 @@ ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r){
 	}
 	ngx_str_set(&r->headers_out.content_type,"text/plain");
 	loc_conf = ngx_http_get_module_loc_conf(r,ngx_http_access_dynamic_module);
+	if(loc_conf == NULL){
+		rc=-1;
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_http_access_dynamic_module ngx_http_access_dynamic_exist_handler loc_conf is null");
+		goto GO_RESULT;
+	}
+	main_conf = ngx_http_get_module_main_conf(r, ngx_http_access_dynamic_module);
+	if (main_conf == NULL) {
+		rc=-1;
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_http_access_dynamic_module ngx_http_access_dynamic_exist_handler main_conf null");
+		goto GO_RESULT;
+	}
 
 	enable = loc_conf->enable;
 	if(enable != 1){
@@ -464,7 +506,7 @@ ngx_http_access_dynamic_exist_handler(ngx_http_request_t *r){
 		goto GO_RESULT;
 	}
 
-	ctx = (ngx_http_access_dynamic_ctx_t *)loc_conf->shm_zone->data;
+	ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
 
 	size_t args_buf_tmp_len = r->args.len;
 	if(!args_buf_tmp_len || args_buf_tmp_len <=0){
@@ -532,6 +574,7 @@ ngx_http_access_dynamic_del_handler(ngx_http_request_t *r){
 		char separator = '&';
 		u_char *args_ip_value_start,*args_ip_value_end;
 		ngx_http_access_dynamic_loc_conf_t *loc_conf;
+		ngx_http_access_dynamic_main_conf_t *main_conf;
 		ngx_http_access_dynamic_ctx_t *ctx;
 		ngx_chain_t *out;
 		ngx_buf_t *b;
@@ -546,6 +589,17 @@ ngx_http_access_dynamic_del_handler(ngx_http_request_t *r){
 		}
 		ngx_str_set(&r->headers_out.content_type,"text/plain");
 		loc_conf = ngx_http_get_module_loc_conf(r,ngx_http_access_dynamic_module);
+		if(loc_conf == NULL){
+			rc=-1;
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_http_access_dynamic_module ngx_http_access_dynamic_del_handler loc_conf is null");
+			goto GO_RESULT;
+		}
+		main_conf = ngx_http_get_module_main_conf(r, ngx_http_access_dynamic_module);
+		if (main_conf == NULL) {
+			rc=-1;
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,  "ngx_http_access_dynamic_module ngx_http_access_dynamic_del_handler loc_conf is null");
+			goto GO_RESULT;
+		}
 
 		enable = loc_conf->enable;
 		if(enable != 1){
@@ -724,6 +778,7 @@ static ngx_int_t
 ngx_http_access_dynamic_handler(ngx_http_request_t *r){
 	 struct sockaddr_in          *sin;
 	 ngx_http_access_dynamic_loc_conf_t  *loc_conf;
+	 ngx_http_access_dynamic_main_conf_t  *main_conf;
 	 ngx_http_access_dynamic_ctx_t *ctx;
 	 ngx_http_access_dynamic_shctx_t *shm;
 	 ngx_flag_t enable;
@@ -741,12 +796,19 @@ ngx_http_access_dynamic_handler(ngx_http_request_t *r){
 	 if(enable != 1){
 		 return NGX_DECLINED;
 	 }
-	 ctx = (ngx_http_access_dynamic_ctx_t *)loc_conf->shm_zone->data;
-	 if(!ctx){
+
+     main_conf = ngx_http_get_module_main_conf(r, ngx_http_access_dynamic_module);
+	 if(main_conf == NULL) {
+	 	return NGX_DECLINED;
+	 }
+
+
+	 ctx = (ngx_http_access_dynamic_ctx_t *)main_conf->shm_zone->data;
+	 if(ctx == NULL){
 	 		 return NGX_HTTP_SERVICE_UNAVAILABLE;
 	 }
 	 shm = ctx->shm;
-	 if(!shm){
+	 if(shm == NULL){
 		 return NGX_HTTP_SERVICE_UNAVAILABLE;
 	 }
 
