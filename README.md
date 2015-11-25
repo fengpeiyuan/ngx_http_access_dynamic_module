@@ -3,12 +3,12 @@ Name
 
 **ngx_http_access_dynamic_module**
 
-This project is still experimental and under early development.
+This module is still experimental and under early development.
 
 Description
 ===========
 
-**ngx_http_access_dynamic_module** - one of nginx real-time deny access module. Code 403 should be returned when be denied. Only support no mask ipv4 now. 
+**ngx_http_access_dynamic_module** - one of nginx real-time deny access module. Code 403 will be returned when denied. Only support no-mask ipv4 now. 
 
 
 *This module is not distributed with the Nginx source.* See [the installation instructions](#installation).
@@ -38,12 +38,12 @@ You can config bellow.
 		access_dynamic_push;
 	}
 
-	#check if an ip addree has been denied already
+	#check if an ip addree has been denied already, return 1 means exist, 0 not.
 	location /ip-exist {
 		access_dynamic_exist;
 	}
 
-	#allow an ip address if exist 
+	#del an ip address if exist, ok return 1, not exist return 0 
 	location /ip-del {
 		access_dynamic_del;
 	}
