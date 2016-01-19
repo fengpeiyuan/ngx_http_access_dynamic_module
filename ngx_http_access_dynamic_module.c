@@ -2,9 +2,32 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#define DICT_BUCKET_CAPACITY 10000
+#define DICT_BUCKET_CAPACITY 1000000
 #define DICT_CAPACITY 20000
 #define PUSH_BATCH_SIZE 10
+
+/**
+ *  n = hash(key) % DICT_CAPACITY
+ *  idx[n]=vn
+ *
+ *
+ *  idx[DICT_CAPACITY]
+ *  +----------------------------------+
+ *  | 0 | 3 | ... ... | n | ... ... ...|
+ *  +----------------------------------+
+ *    |  |______        |__
+ *    |         |          |
+ *    V         V          V
+ *  +-------------------------------------- +
+ *  | v1 | v2 | v3 | ... | vn | ... ... ... |
+ *  +---------------------------------------+
+ *    1    2    3           n
+ *    |    ^
+ *    |next|
+ *
+ *  bucket_arr[DICT_BUCKET_CAPACITY]
+ *
+ */
 
 typedef struct {
     ngx_shm_zone_t *shm_zone;
@@ -18,8 +41,8 @@ typedef struct {
 
 typedef struct {
     char addr_text[256];
-    in_addr_t mask;
-    in_addr_t addr;
+//    in_addr_t mask;
+//    in_addr_t addr;
     ngx_int_t next;
     ngx_int_t is_used;
 } ngx_http_access_dynamic_dict_bucket_item;
@@ -678,8 +701,8 @@ del_from_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr){
         	}
         	shm->bucket_arr[idx].next = -1;
         	ngx_memzero(shm->bucket_arr[idx].addr_text,256*sizeof(char));
-        	ngx_memzero(&shm->bucket_arr[idx].addr,sizeof(in_addr_t));
-        	ngx_memzero(&shm->bucket_arr[idx].mask,sizeof(in_addr_t));
+        	//ngx_memzero(&shm->bucket_arr[idx].addr,sizeof(in_addr_t));
+        	//ngx_memzero(&shm->bucket_arr[idx].mask,sizeof(in_addr_t));
         	shm->bucket_arr[idx].is_used = 0;
         	shm->last_used_bucket = idx;
             return idx;
@@ -718,8 +741,8 @@ insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr
         		last_used_bucket++;
         	}
         	ngx_cpystrn((u_char *)shm->bucket_arr[last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
-        	shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
-        	shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
+        	//shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
+        	//shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
             shm->bucket_arr[pre_idx].next = last_used_bucket;
             shm->bucket_arr[last_used_bucket].is_used = 1;
         }
@@ -731,8 +754,8 @@ insert_into_dict(ngx_http_access_dynamic_ctx_t  *ctx, ngx_str_t *ipaddr,ngx_cidr
     	}
         shm->bucket_idx[key] = last_used_bucket;
         ngx_cpystrn((u_char *)&shm->bucket_arr[last_used_bucket].addr_text, ipaddr->data,ipaddr->len+1);
-        shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
-        shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
+        //shm->bucket_arr[last_used_bucket].addr = cidr->u.in.addr;
+        //shm->bucket_arr[last_used_bucket].mask = cidr->u.in.mask;
         shm->bucket_arr[last_used_bucket].is_used = 1;
     }
     shm->last_used_bucket = last_used_bucket;
@@ -785,8 +808,7 @@ ngx_http_access_dynamic_handler(ngx_http_request_t *r){
 	 ngx_str_t *addr_text;
 	 in_addr_t addr;
 	 ngx_int_t idx;
-	 in_addr_t mask_in_dic;
-	 in_addr_t addr_in_dic;
+
 
 	 loc_conf = ngx_http_get_module_loc_conf(r, ngx_http_access_dynamic_module);
 	 if(!loc_conf){
@@ -821,15 +843,7 @@ ngx_http_access_dynamic_handler(ngx_http_request_t *r){
          addr = sin->sin_addr.s_addr;
          idx = search_from_dict(ctx,addr_text);
          if(idx >= 0){
-        	 mask_in_dic = shm->bucket_arr[idx].mask;
-        	 addr_in_dic = shm->bucket_arr[idx].addr;
-        	 if(!mask_in_dic || !addr_in_dic){
-        		 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "mask_in_dic is null or addr_in_dic is null, in dic bucket_arr[%d]",idx);
-        	 }else{
-				 if ((addr & mask_in_dic) == addr_in_dic) {
-					 return NGX_HTTP_FORBIDDEN;
-				 }
-        	 }
+			return NGX_HTTP_FORBIDDEN;
          }
 		 return NGX_OK;
 	 }
